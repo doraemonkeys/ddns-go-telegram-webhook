@@ -48,7 +48,7 @@ bot.command("gethook", async (ctx) => {
 
   // 构造 Webhook URL placeholder
   // 用户需要手动替换 YOUR_DENO_DEPLOY_PROJECT_NAME.deno.dev
-  const placeholderWebhookUrl = `https://YOUR_DENO_DEPLOY_PROJECT_NAME.deno.dev/webhook/${hookId}`;
+  const placeholderWebhookUrl = `https://ddns-go-tel.deno.dev/webhook/${hookId}`;
 
   // 建议的 Request Body 格式
   const requestBodyExample = `\`\`\`json
