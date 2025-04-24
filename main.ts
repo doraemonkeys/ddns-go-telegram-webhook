@@ -1,57 +1,78 @@
 import { Bot, webhookCallback } from "grammy";
 
-// 从环境变量获取 Telegram Bot Token
-// 在 Deno Deploy 项目设置中配置 BOT_TOKEN
+// --- 配置 ---
+// 1. 从环境变量获取 Bot Token
 const BOT_TOKEN = Deno.env.get("BOT_TOKEN");
 if (!BOT_TOKEN) {
-  console.error("BOT_TOKEN environment variable not set.");
-  // Deno Deploy 会检查 envs，所以运行时如果没有通常是部署配置问题
+  console.error("❌ 环境变量 BOT_TOKEN 未设置!");
+  Deno.exit(1);
 }
 
-// 初始化 GramJS Bot 实例
-const bot = new Bot(BOT_TOKEN || ""); // 如果 BOT_TOKEN 为空，bot 不会正常工作
-
-// 打开 Deno KV 数据库
-// Deno Deploy 会自动提供对项目关联 KV 的访问
-const kv = await Deno.openKv();
-
-// 定义预期的 DDNS-Go Webhook JSON 结构类型
-interface DdnsGoIPDetail {
-  result: "OK" | "FAIL" | "NO_CHANGE";
-  addr: string; // IP 地址
-  domains: string; // 受影响的域名列表, 逗号分隔
+// 2. 从环境变量获取你的公网地址或域名
+// 例如: http://your_public_ip:8000 或 https://your_domain.com
+const BASE_URL = Deno.env.get("BASE_URL");
+if (!BASE_URL) {
+  console.error("❌ 环境变量 BASE_URL 未设置! 请设置为你的公网可访问地址 (带端口 if needed) 例如: http://your_ip:8000");
+  Deno.exit(1);
 }
 
-interface DdnsGoWebhookBody {
-  ipv4?: DdnsGoIPDetail;
-  ipv6?: DdnsGoIPDetail;
+// 3. 从环境变量获取 Webhook Secret Token (用于增强安全性)
+// 建议生成一个随机的、足够长的字符串作为 secret token
+const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SECRET");
+if (!WEBHOOK_SECRET) {
+  console.error("❌ 环境变量 WEBHOOK_SECRET 未设置! 请设置一个随机且安全的字符串。");
+  Deno.exit(1);
 }
 
 
-// --- Telegram Bot Logic ---
+// --- 初始化 ---
+const bot = new Bot(BOT_TOKEN);
+const kv = await Deno.openKv(); // 打开 Deno KV 数据库
 
-// 处理 /start 命令
+// --- KV 键结构 ---
+// ["chat", chatId] -> webhookPath (string)
+// ["webhook", webhookPath] -> chatId (number)
+
+// --- Telegram 机器人命令处理 ---
 bot.command("start", async (ctx) => {
-  await ctx.reply("你好！我是 DDNS-Go Webhook 通知机器人。发送 /gethook 获取你的专属 Webhook URL 和配置信息。");
+  await ctx.reply(
+    "你好! 我是一个用于接收 ddns-go Webhook 回调的机器人。\n" +
+    "发送 /gethook 来获取你的专属 Webhook 配置信息。",
+  );
 });
 
-// 处理 /gethook 命令
 bot.command("gethook", async (ctx) => {
   const chatId = ctx.chat.id;
 
-  // 生成一个唯一的 ID 作为 Webhook 路径的一部分
-  const hookId = crypto.randomUUID();
+  // 1. 检查是否已为该用户生成过 Webhook 路径
+  const userEntry = await kv.get(["chat", chatId]);
+  let webhookPath = userEntry.value as string | null;
 
-  // 将 hookId 与 chatId 关联存储到 Deno KV
-  // Key: ["hook", hookId], Value: chatId
-  await kv.set(["hook", hookId], chatId);
+  if (!webhookPath) {
+    // 2. 如果没有，生成一个唯一的路径 (使用 UUID 的一部分)
+    webhookPath = crypto.randomUUID().split('-')[0]; // 取 UUID 的第一段作为路径，通常足够唯一且不长
 
-  // 构造 Webhook URL placeholder
-  // 用户需要手动替换 YOUR_DENO_DEPLOY_PROJECT_NAME.deno.dev
-  const placeholderWebhookUrl = `https://ddns-go-tel.deno.dev/webhook/${hookId}`;
+    // 3. 存储 Chat ID -> Webhook Path 和 Webhook Path -> Chat ID 的映射
+    try {
+      await kv.atomic()
+        .set(["chat", chatId], webhookPath)
+        .set(["webhook", webhookPath], chatId)
+        .commit();
+      console.log(`✅ 生成新的 webhook 路径 ${webhookPath} 给用户 ${chatId}`);
+    } catch (error) {
+      console.error(`❌ 存储 KV 时出错: ${error}`);
+      await ctx.reply("❌ 抱歉，在生成 Webhook 时发生了错误。请稍后再试。");
+      return;
+    }
+  } else {
+    console.log(`用户 ${chatId} 已有 webhook 路径 ${webhookPath}`);
+  }
 
-  // 建议的 Request Body 格式
-  const requestBodyExample = `\`\`\`json
+  // 4. 构造 Webhook URL 和 RequestBody
+  const ddnsWebhookUrl = `${BASE_URL}/ddns-webhook/${webhookPath}`; // 修改路径，更清晰
+
+  // ddns-go 的 RequestBody 模板
+  const requestBody = `\`\`\`json
 {
     "ipv4": {
         "result": "#{ipv4Result}",
@@ -64,158 +85,167 @@ bot.command("gethook", async (ctx) => {
         "domains": "#{ipv6Domains}"
     }
 }
-\`\`\`
-**注：**如果你的 DDNS-Go 未启用 IPv4 或 IPv6，请删除对应的 \`ipv4\` 或 \`ipv6\` 对象。`;
+\`\`\``; // 使用 Markdown 代码块格式化 JSON
 
-
+  // 5. 发送配置信息给用户
   await ctx.reply(
-    `好的，这是你的专属 DDNS-Go Webhook 配置信息：\n\n` +
-    `**1. Webhook URL:**\n\`${placeholderWebhookUrl}\`\n\n` +
-    `**重要提示：**请将 \`YOUR_DENO_DEPLOY_PROJECT_NAME.deno.dev\` 替换为你实际的 Deno Deploy 项目域名！\n\n` +
-    `**2. Request Method:** \`POST\`\n\n` +
-    `**3. Request Body:**\n` + requestBodyExample + `\n\n` +
-    `请将上述 URL 和 Body 配置到你的 DDNS-Go Webhook 设置中。当 IP 发生变化时，我会通知你。`,
-    { parse_mode: "Markdown" } // 使用 Markdown 格式发送，URL 和 JSON 可以用代码块显示
+    `✅ 你的 ddns-go Webhook 配置信息：\n\n` +
+    `🌐 **Webhook URL:**\n\`${ddnsWebhookUrl}\`\n\n` +
+    `📝 **RequestBody (POST 方法):**\n${requestBody}\n\n` +
+    `请将上述 Webhook URL 和 RequestBody 填写到 ddns-go 的 Webhook 设置中。\n` +
+    `_注：未启用 IPv4 或 IPv6 可删除对应 Object_\n\n` +
+    `当 ddns-go 更新成功时，我将在这里发送通知。`,
+    { parse_mode: "Markdown" } // 使用 Markdown 格式发送消息
   );
-
-  console.log(`Generated hook ${hookId} for chat ${chatId}`);
 });
 
-// await bot.start();
+// --- HTTP Webhook 服务器处理 ---
 
+// 定义 Telegram Webhook 路径
+const TELEGRAM_WEBHOOK_PATH = "/telegram-webhook"; // 可以自定义，但需要和 setWebhook 设置的一致
+const TELEGRAM_WEBHOOK_ROUTE = new URLPattern({ pathname: TELEGRAM_WEBHOOK_PATH });
 
-// --- HTTP Server Logic ---
+// 定义 ddns-go Webhook 路径
+const DDNS_WEBHOOK_ROUTE = new URLPattern({ pathname: "/ddns-webhook/:uuid" }); // 使用新路径
 
-// 创建一个处理 Telegram webhook update 的函数
-// Deno Deploy 接收 Telegram updates 到 / 的 POST 请求
-const handleTelegramUpdate = webhookCallback(bot, "std/http");
+// 创建 grammY 的 webhookCallback 处理函数
+// handleUpdate 会验证 secret token
+const handleTelegramWebhook = webhookCallback(bot, "std/http", {
+  secretToken: WEBHOOK_SECRET,
+});
+
 
 // HTTP 请求处理函数
-async function handler(request: Request): Promise<Response> {
-  const url = new URL(request.url);
-  const pathname = url.pathname;
+async function handler(req: Request): Promise<Response> {
+  console.log(`➡️ 收到请求: ${req.method} ${req.url}`);
 
-  console.log(`Received request: ${request.method} ${pathname}`);
-
-  // 根路径，处理 Telegram 更新或简单的健康检查
-  if (pathname === "/") {
-    if (request.method === "POST") {
-      try {
-        // 将 Request 对象传递给 handleTelegramUpdate 函数
-        return await handleTelegramUpdate(request);
-      } catch (e) {
-        console.error("Error handling Telegram update:", e);
-        // 在生产环境中，不建议将内部错误信息直接返回给客户端
-        return new Response("Internal Server Error (Telegram handler)", { status: 500 });
-      }
-    } else {
-      return new Response("DDNS-Go Telegram Webhook Bot is running!", { status: 200 });
+  // 1. 检查是否是 Telegram Webhook 请求
+  const telegramMatch = TELEGRAM_WEBHOOK_ROUTE.exec(req.url);
+  if (telegramMatch) {
+    console.log(`   匹配到 Telegram Webhook 路径`);
+    try {
+      // 将请求交给 grammY 的 handleUpdate 处理
+      const response = await handleTelegramWebhook(req);
+      console.log(`   Telegram Webhook 处理完成, 状态码: ${response.status}`);
+      return response;
+    } catch (error) {
+      console.error("❌ 处理 Telegram Webhook 时出错:", error);
+      return new Response("Internal Server Error", { status: 500 });
     }
   }
 
-  // DDNS-Go Webhook 路径
-  // 格式为 /webhook/:hookId
-  const webhookMatch = pathname.match(/^\/webhook\/([^/]+)$/);
-  if (request.method === "POST" && webhookMatch) {
-    const hookId = webhookMatch[1];
-    console.log(`Received webhook for hookId: ${hookId}`);
+  // 2. 检查是否是 ddns-go Webhook 请求
+  const ddnsMatch = DDNS_WEBHOOK_ROUTE.exec(req.url);
+  if (ddnsMatch) {
+    const uuid = ddnsMatch.pathname.groups.uuid;
+    if (!uuid) {
+      console.warn(`   未匹配到 webhook 路径`);
+      return new Response("Not Found (Invalid webhook path)", { status: 404 });
+    }
+    console.log(`   匹配到 ddns-go Webhook 路径, uuid: ${uuid}`);
 
-    // 从 KV 获取对应的 Chat ID
-    const entry = await kv.get<number>(["hook", hookId]);
+    // 从 KV 中查找对应的 Chat ID
+    const chatEntry = await kv.get(["webhook", uuid]);
+    const chatId = chatEntry.value as number | null;
 
-    if (!entry || entry.value === null) {
-      console.warn(`Invalid or not found hookId: ${hookId}`);
-      return new Response("Invalid hook ID", { status: 404 });
+    if (!chatId) {
+      // 路径不存在或找不到对应的用户
+      console.warn(`   ddns-go Webhook UUID "${uuid}" 未找到对应的 Chat ID`);
+      return new Response("Not Found (Invalid webhook path)", { status: 404 });
     }
 
-    const chatId = entry.value;
+    // 检查请求方法是否是 POST
+    if (req.method !== "POST") {
+      console.warn(`   ddns-go Webhook UUID "${uuid}" 收到非 POST 请求: ${req.method}`);
+      return new Response("Method Not Allowed", { status: 405 });
+    }
 
+    // 解析请求体 JSON
     try {
-      // 验证 Content-Type 是否是 JSON
-      const contentType = request.headers.get("content-type");
-      if (!contentType?.includes("application/json")) {
-        console.warn(`Received non-JSON webhook body for hookId: ${hookId}`);
-        return new Response("Bad Request: Content-Type must be application/json", { status: 415 }); // 415 Unsupported Media Type
-      }
+      const body = await req.json();
+      console.log(`   收到 ddns-go webhook body:`, JSON.stringify(body));
 
-      // 解析 JSON 请求体
-      let body: DdnsGoWebhookBody;
-      try {
-        body = await request.json();
-        console.log("Webhook body parsed:", body);
-      } catch (e) {
-        console.error("Failed to parse JSON body for hookId:", hookId, e);
-        return new Response("Bad Request: Invalid JSON body", { status: 400 });
-      }
+      // 格式化消息内容
+      let messageText = "🌐 **DDNS-GO IP 更新通知**\n\n";
 
-      // 构造通知消息
-      let messageText = `🤖 DDNS-Go IP 更新通知：\n\n`;
-      let notificationSent = false; // 标记是否有需要用户关注的更新（OK 或 FAIL）
-
-      // 处理 IPv4 更新
       if (body.ipv4) {
-        messageText += `🌐 IPv4 更新结果: \`${body.ipv4.result}\`\n`;
-        if (body.ipv4.result === "OK") {
-          messageText += `  地址: \`${body.ipv4.addr}\`\n`;
-          messageText += `  域名: \`${body.ipv4.domains}\`\n`;
-          notificationSent = true;
-        } else if (body.ipv4.result === "FAIL") {
-          messageText += `  详细信息: ${body.ipv4.addr || 'N/A'} (见ddns-go日志)\n`; // addr在FAIL时可能包含错误信息
-          notificationSent = true; // FAIL 也需要通知用户
-        }
-        // 如果是 NO_CHANGE，不添加额外信息，只保留结果行
+        messageText += `**IPv4:**\n`;
+        messageText += `  结果: \`${body.ipv4.result}\`\n`;
+        if (body.ipv4.addr) messageText += `  地址: \`${body.ipv4.addr}\`\n`;
+        if (body.ipv4.domains) messageText += `  域名: \`${body.ipv4.domains}\`\n`;
+        messageText += "\n";
       }
 
-      // 处理 IPv6 更新
       if (body.ipv6) {
-        messageText += `🌐 IPv6 更新结果: \`${body.ipv6.result}\`\n`;
-        if (body.ipv6.result === "OK") {
-          messageText += `  地址: \`${body.ipv6.addr}\`\n`;
-          messageText += `  域名: \`${body.ipv6.domains}\`\n`;
-          notificationSent = true;
-        } else if (body.ipv6.result === "FAIL") {
-          messageText += `  详细信息: ${body.ipv6.addr || 'N/A'} (见ddns-go日志)\n`; // addr在FAIL时可能包含错误信息
-          notificationSent = true; // FAIL 也需要通知用户
-        }
-        // 如果是 NO_CHANGE，不添加额外信息，只保留结果行
+        messageText += `**IPv6:**\n`;
+        messageText += `  结果: \`${body.ipv6.result}\`\n`;
+        if (body.ipv6.addr) messageText += `  地址: \`${body.ipv6.addr}\`\n`;
+        if (body.ipv6.domains) messageText += `  域名: \`${body.ipv6.domains}\`n`;
+        messageText += "\n";
       }
 
-      // 如果既没有 IPv4 也没有 IPv6 信息，或者两者都有但都是 NO_CHANGE，可以添加一条提示
-      // 仅在没有发送过需要用户关注的通知时执行
-      if (!notificationSent) {
-        if (!body.ipv4 && !body.ipv6) {
-          console.warn(`Webhook body for hookId ${hookId} contains neither ipv4 nor ipv6 objects.`);
-          // 不向用户发送消息，因为可能是ddns-go配置不包含任何IP
-          // 但可以返回400让ddns-go知道格式有问题
-          return new Response("Bad Request: Webhook body must contain ipv4 or ipv6 object", { status: 400 });
-        } else {
-          // 既有ipv4/ipv6对象，但结果都不是OK或FAIL (即都是NO_CHANGE)，则发送一个无变化的通知
-          messageText += "本次 IP 检测无变化（NO_CHANGE）。";
-          await bot.api.sendMessage(chatId, messageText.trim(), { parse_mode: "Markdown" });
-        }
-      } else {
-        // 如果有OK或FAIL结果，发送包含详细信息的通知
-        await bot.api.sendMessage(chatId, messageText.trim(), { parse_mode: "Markdown" });
+      // 通过 Telegram 机器人发送消息给用户
+      try {
+        await bot.api.sendMessage(chatId, messageText, { parse_mode: "Markdown" });
+        console.log(`   成功发送消息到 Chat ID ${chatId}`);
+      } catch (telegramErr) {
+        console.error(`   ❌ 发送 Telegram 消息到 ${chatId} 时出错:`, telegramErr);
+        // 即使发送 Telegram 消息失败，仍然返回 200 给 ddns-go
       }
 
-
-      console.log(`Processed webhook for hook ${hookId} and potentially sent notification to chat ${chatId}`);
-
-      // 无论是否发送了通知消息，只要 webhook 处理成功且格式正确，都返回 OK 给 ddns-go
+      // 返回成功响应给 ddns-go
       return new Response("OK", { status: 200 });
 
-    } catch (error) {
-      console.error(`Error processing webhook for hookId ${hookId}:`, error);
-      // 更详细的错误响应，但发送给ddns-go，它可能不处理
-      return new Response(`Internal Server Error: ${error}`, { status: 500 });
+    } catch (jsonErr) {
+      console.error(`   ❌ 解析 ddns-go webhook body 时出错:`, jsonErr);
+      return new Response("Bad Request (Invalid JSON)", { status: 400 });
     }
+
   }
 
-  // 其他未知路径
+  // 3. 未匹配到任何已知路径
+  console.warn(`   未匹配到已知路径: ${req.url}`);
   return new Response("Not Found", { status: 404 });
 }
 
-// 启动 HTTP 服务器
-Deno.serve(handler);
+// --- 启动服务器和设置 Webhook ---
 
-console.log("HTTP server started on port 8000"); // Deno Deploy 使用 8000 端口
+const httpPort = 8000; // 你希望 Deno 监听的端口
+
+// 在启动 HTTP 服务器之前，先设置 Telegram Webhook
+const telegramWebhookUrl = `${BASE_URL}${TELEGRAM_WEBHOOK_PATH}`;
+console.log(`⚙️ 正在设置 Telegram Webhook 到: ${telegramWebhookUrl}`);
+
+try {
+  const success = await bot.api.setWebhook(telegramWebhookUrl, {
+    secret_token: WEBHOOK_SECRET,
+    // max_connections: 40, // 可选参数，根据你的服务器能力设置
+    // allowed_updates: ["message", "callback_query"], // 可选参数，只接收指定类型的更新
+  });
+
+  if (success) {
+    console.log("✅ Telegram Webhook 设置成功!");
+  } else {
+    // bot.api.setWebhook 在失败时可能会抛出错误，但也可能返回 success: false
+    console.error("❌ Telegram Webhook 设置失败 (API 返回 false)");
+    // 可以尝试获取 getWebhookInfo 看看具体是什么问题
+    const info = await bot.api.getWebhookInfo();
+    console.error("Webhook Info:", info);
+    // 如果是永久性错误，可能需要退出
+    // Deno.exit(1); // 根据实际情况决定是否退出
+  }
+
+  // 启动 HTTP 服务器来监听传入的 Webhook 请求
+  console.log(`🚀 启动 HTTP Webhook 服务器在端口 ${httpPort}`);
+  // Deno.serve 是非阻塞的
+  Deno.serve({ port: httpPort }, handler);
+  console.log("服务器正在运行，等待传入的 Webhook 请求...");
+
+} catch (error) {
+  console.error("❌ 启动过程中发生错误:", error);
+  console.error("请检查 BASE_URL 是否正确，以及网络是否能访问 Telegram API。");
+  Deno.exit(1); // 启动失败，退出程序
+}
+
+// 注意: 在 Webhook 模式下，bot.start() 是不需要的，因为它用于 polling
+// 程序会因为 Deno.serve 的运行而保持活跃
