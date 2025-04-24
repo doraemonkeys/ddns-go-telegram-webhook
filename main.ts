@@ -81,15 +81,14 @@ bot.command("gethook", async (ctx) => {
   console.log(`Generated hook ${hookId} for chat ${chatId}`);
 });
 
-await bot.start();
+// await bot.start();
 
 
 // --- HTTP Server Logic ---
 
 // 创建一个处理 Telegram webhook update 的函数
 // Deno Deploy 接收 Telegram updates 到 / 的 POST 请求
-// 使用 "callback" 适配器，因为它返回一个标准的请求处理函数
-const handleTelegramUpdate = webhookCallback(bot, "callback");
+const handleTelegramUpdate = webhookCallback(bot, "std/http");
 
 // HTTP 请求处理函数
 async function handler(request: Request): Promise<Response> {
