@@ -205,7 +205,13 @@ async function handler(req: Request): Promise<Response> {
 
   // 3. 未匹配到任何已知路径
   console.warn(`   未匹配到已知路径: ${req.url}`);
-  return new Response("Not Found", { status: 404 });
+  const redirectUrl = `https://github.com/doraemonkeys/ddns-go-telegram-webhook`;
+  return new Response(null, {
+    status: 302,
+    headers: {
+      "Location": redirectUrl,
+    },
+  });
 }
 
 // --- 启动服务器和设置 Webhook ---
