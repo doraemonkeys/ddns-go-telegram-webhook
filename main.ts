@@ -180,7 +180,7 @@ async function handler(req: Request): Promise<Response> {
         messageText += `**IPv6:**\n`;
         messageText += `  结果: \`${body.ipv6.result}\`\n`;
         if (body.ipv6.addr) messageText += `  地址: \`${body.ipv6.addr}\`\n`;
-        if (body.ipv6.domains) messageText += `  域名: \`${body.ipv6.domains}\`n`;
+        if (body.ipv6.domains) messageText += `  域名: \`${body.ipv6.domains}\`\n`;
         messageText += "\n";
       }
 
