@@ -81,6 +81,8 @@ bot.command("gethook", async (ctx) => {
   console.log(`Generated hook ${hookId} for chat ${chatId}`);
 });
 
+await bot.start();
+
 
 // --- HTTP Server Logic ---
 
