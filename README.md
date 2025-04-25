@@ -36,7 +36,7 @@
 
 ## Deploy
 
-![Deploy](https://dash.deno.com/new?url=https://raw.githubusercontent.com/doraemonkeys/ddns-go-telegram-webhook/main/main.ts;env=BOT_TOKEN,BASE_URL,WEBHOOK_SECRET)
+[Deno Deploy](https://dash.deno.com/new?url=https://raw.githubusercontent.com/doraemonkeys/ddns-go-telegram-webhook/main/main.ts&amp;env=BOT_TOKEN,BASE_URL,WEBHOOK_SECRET)
 
 
 
