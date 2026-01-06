@@ -67,7 +67,7 @@
    - 记下项目名称（如 `my-ddns-webhook`）
 
 3. **修改 GitHub Actions 配置**
-   - 编辑 `.github/workflows/deploy.yml` 第 37 行
+   - 编辑 `.github/workflows/deploy.yml`
    - 将 `project: "ddns-go-tel"` 改为你的项目名
 
    ```yaml
