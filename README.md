@@ -15,10 +15,11 @@
 3. 复制 Webhook URL 并粘贴
 4. 复制 RequestBody 并粘贴
 
-注：未启用 IPv4 或 IPv6 可删除对应 Object
+注：`server` 字段可自定义名称以区分多台服务器，也可删除；未启用 IPv4 或 IPv6 可删除对应 Object
 
 ```json
 {
+    "server": "自定义服务器名称(可选)",
     "ipv4": {
         "result": "#{ipv4Result}",
         "addr": "#{ipv4Addr}",

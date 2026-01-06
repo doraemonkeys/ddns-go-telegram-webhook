@@ -74,6 +74,7 @@ bot.command("gethook", async (ctx) => {
   // ddns-go 的 RequestBody 模板
   const requestBody = `\`\`\`json
 {
+    "server": "自定义服务器名称(可选)",
     "ipv4": {
         "result": "#{ipv4Result}",
         "addr": "#{ipv4Addr}",
@@ -93,7 +94,7 @@ bot.command("gethook", async (ctx) => {
     `🌐 **Webhook URL:**\n\`${ddnsWebhookUrl}\`\n\n` +
     `📝 **RequestBody (POST 方法):**\n${requestBody}\n\n` +
     `请将上述 Webhook URL 和 RequestBody 填写到 ddns-go 的 Webhook 设置中。\n` +
-    `_注：未启用 IPv4 或 IPv6 可删除对应 Object_\n\n` +
+    `_注：server 字段可自定义名称以区分多台服务器，也可删除；未启用 IPv4 或 IPv6 可删除对应 Object_\n\n` +
     `当 ddns-go 更新成功时，我将在这里发送通知。`,
     { parse_mode: "Markdown" } // 使用 Markdown 格式发送消息
   );
@@ -167,6 +168,11 @@ async function handler(req: Request): Promise<Response> {
 
       // 格式化消息内容
       let messageText = "🌐 **DDNS-GO IP 更新通知**\n\n";
+
+      // 可选：显示服务器名称（兼容旧版本，没有 server 字段也能正常工作）
+      if (body.server) {
+        messageText += `🖥️ 服务器: \`${body.server}\`\n\n`;
+      }
 
       if (body.ipv4) {
         messageText += `**IPv4:**\n`;
